@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Optional
 
 # tkinter is in the stdlib
 import tkinter as tk
@@ -142,6 +143,13 @@ class PlaylistMP3App:
         )
         bitrate_combo.pack(side=tk.LEFT)
 
+        # Progress bar (updated from yt-dlp output)
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_bar = ttk.Progressbar(
+            main, variable=self.progress_var, maximum=100.0, mode="determinate"
+        )
+        self.progress_bar.pack(fill=tk.X, pady=(0, 8))
+
         # Buttons
         btn_row = ttk.Frame(main)
         btn_row.pack(fill=tk.X, pady=(4, 8))
@@ -187,6 +195,38 @@ class PlaylistMP3App:
         self.log.delete(1.0, tk.END)
         self.log.configure(state=tk.DISABLED)
 
+    def _progress_reset(self):
+        """Reset progress bar to indeterminate (unknown progress) at start."""
+        self.progress_bar.configure(mode="indeterminate")
+        self.progress_bar.start(8)
+
+    def _progress_set_percent(self, value: float):
+        """Set progress bar to a 0–100 percentage (determinate)."""
+        try:
+            self.progress_bar.stop()
+        except tk.TclError:
+            pass
+        self.progress_bar.configure(mode="determinate")
+        self.progress_var.set(max(0.0, min(100.0, value)))
+
+    def _progress_done(self):
+        """Stop progress bar and set to 100%."""
+        try:
+            self.progress_bar.stop()
+        except tk.TclError:
+            pass
+        self.progress_bar.configure(mode="determinate")
+        self.progress_var.set(100.0)
+
+    def _parse_progress_line(self, line: str) -> Optional[float]:
+        """Extract download percentage from a yt-dlp progress line. Returns 0–100 or None."""
+        # e.g. [download] 45.2% of 5.00MiB at 1.20MiB/s ETA 00:03
+        # e.g. [download] 100% of 1.20MiB in 00:00
+        m = re.search(r"\[download\]\s*(\d+(?:\.\d+)?)\s*%", line)
+        if m:
+            return float(m.group(1))
+        return None
+
     def _start_download(self):
         url = (self.url_var.get() or "").strip()
         out = (self.path_var.get() or "").strip()
@@ -210,6 +250,7 @@ class PlaylistMP3App:
         self.btn_download.configure(state=tk.DISABLED)
         self.btn_stop.configure(state=tk.NORMAL)
         self._clear_log()
+        self._progress_reset()
         self._log("Starting download…")
         self._log("")
 
@@ -256,6 +297,9 @@ class PlaylistMP3App:
                 line = line.rstrip()
                 if line:
                     self.root.after(0, lambda l=line: self._log(l))
+                    percent = self._parse_progress_line(line)
+                    if percent is not None:
+                        self.root.after(0, lambda p=percent: self._progress_set_percent(p))
             returncode = self.process.wait()
         except FileNotFoundError:
             returncode = -1
@@ -280,6 +324,7 @@ class PlaylistMP3App:
         self.process = None
         self.btn_download.configure(state=tk.NORMAL)
         self.btn_stop.configure(state=tk.DISABLED)
+        self.root.after(0, self._progress_done)
         if returncode == 0:
             self._log("Download complete.")
         else:
