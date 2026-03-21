@@ -87,6 +87,42 @@ Install **ffmpeg** with your package manager if needed, for example:
 - Ubuntu/Debian: `sudo apt install ffmpeg`
 - Arch: `sudo pacman -S ffmpeg`
 
+## Windows
+
+The project runs on Windows the same way (Python + yt-dlp + ffmpeg + a JS runtime). The code already uses `yt-dlp.exe` on Windows.
+
+1. **Python 3.9+** — Install from [python.org](https://www.python.org/downloads/). During setup, enable **Add python.exe to PATH**.
+2. **Dependencies** (PowerShell or Command Prompt):
+
+   ```bat
+   cd path\to\Ytdownloader
+   python -m pip install -r requirements.txt
+   ```
+
+3. **ffmpeg** — Needed for MP3 conversion, for example:
+
+   ```bat
+   winget install ffmpeg
+   ```
+
+   Or install from [ffmpeg.org](https://ffmpeg.org/download.html) and ensure `ffmpeg` is on your `PATH`.
+
+4. **JavaScript runtime** for YouTube — Install one of [Node.js LTS](https://nodejs.org/), [Deno](https://deno.land/), or [Bun](https://bun.sh/) and ensure it is on your `PATH`.
+
+**Run the app** (same as Linux/macOS):
+
+| Mode | Command |
+|------|---------|
+| GUI | `python playlist_mp3_gui.py` |
+| CLI | `python playlist_mp3_cli.py` |
+| Web | `python web_app.py` → open [http://127.0.0.1:8742](http://127.0.0.1:8742) |
+
+**Paths:** Use normal Windows paths, e.g. `C:\Users\YourName\Music\MyPlaylist`, or use **Browse…** in the GUI. Missing folders are still created automatically.
+
+**Web UI:** The first time you run it, Windows Firewall may ask to allow Python — only relevant if you change the bind address away from localhost.
+
+**Antivirus:** Rarely interferes with `yt-dlp`; if downloads fail mysteriously, try an exception for your project folder or Python.
+
 ## Usage
 
 ### GUI
