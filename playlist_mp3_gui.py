@@ -1,178 +1,334 @@
 #!/usr/bin/env python3
-"""
-YouTube Playlist to MP3 Downloader – simple GUI to download all tracks from a
-YouTube playlist as MP3 files using yt-dlp.
-"""
+"""YouTube Playlist to MP3 Downloader — GUI using yt-dlp."""
 
-import json
+from __future__ import annotations
+
 import os
-import re
-import shutil
 import subprocess
 import sys
 import threading
-from pathlib import Path
 from typing import Optional
 
-# tkinter is in the stdlib
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+try:
+    import tkinter as tk
+    import tkinter.font as tkfont
+    from tkinter import ttk, filedialog, messagebox, scrolledtext
+except ImportError:
+    tk = None  # type: ignore[misc, assignment]
+    tkfont = None  # type: ignore[misc, assignment]
+    ttk = None  # type: ignore[misc, assignment]
+    filedialog = None  # type: ignore[misc, assignment]
+    messagebox = None  # type: ignore[misc, assignment]
+    scrolledtext = None  # type: ignore[misc, assignment]
+
+from dependencies import DepIssue, collect_dependency_issues, format_issues_report
+from yt_playlist_core import (
+    PlaylistTrackProgress,
+    build_yt_dlp_command,
+    ensure_output_dir,
+    is_youtube_url,
+    load_config,
+    parse_progress_line,
+    save_config,
+)
 
 
 # Placeholder shown in URL entry until user focuses
 PLACEHOLDER_URL = "https://music.youtube.com/playlist?list=..."
 
-# Config file for persisting last output directory
-def _config_path() -> Path:
-    p = Path.home() / ".config" / "yt-playlist-mp3"
-    p.mkdir(parents=True, exist_ok=True)
-    return p / "config.json"
+# UI palette (light theme, high contrast log)
+_COL = {
+    "bg": "#f1f5f9",
+    "header": "#0f172a",
+    "header_sub": "#94a3b8",
+    "card": "#ffffff",
+    "border": "#e2e8f0",
+    "text": "#0f172a",
+    "muted": "#64748b",
+    "accent": "#2563eb",
+    "accent_hover": "#1d4ed8",
+    "log_bg": "#0c0c0f",
+    "log_fg": "#e4e4e7",
+    "log_sel": "#3b82f6",
+}
 
 
-def load_config() -> dict:
+def _default_font_family() -> str:
     try:
-        with open(_config_path(), encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        return tkfont.nametofont("TkDefaultFont").actual()["family"]
+    except tk.TclError:
+        return "TkDefaultFont"
 
 
-def save_config(data: dict) -> None:
-    with open(_config_path(), "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+def _print_tkinter_install_help() -> None:
+    from dependencies import detect_platform_family
 
-
-# Validate YouTube / YouTube Music playlist and video URLs
-def is_youtube_url(text: str) -> bool:
-    text = (text or "").strip()
-    if not text:
-        return False
-    patterns = [
-        # youtube.com
-        r"https?://(www\.)?youtube\.com/playlist\?list=[\w-]+",
-        r"https?://(www\.)?youtube\.com/watch\?v=[\w-]+(&list=[\w-]+)?",
-        r"https?://youtu\.be/[\w-]+",
-        # music.youtube.com (YouTube Music)
-        r"https?://music\.youtube\.com/playlist\?list=[\w-]+",
-        r"https?://music\.youtube\.com/watch\?v=[\w-]+(&list=[\w-]+)?",
-    ]
-    return any(re.match(p, text) for p in patterns)
-
-
-def get_yt_dlp_cmd():
-    """Return list of command parts to run yt-dlp: [exe] or [python, '-m', 'yt_dlp']."""
-    exe = "yt-dlp"
-    if sys.platform == "win32":
-        exe = "yt-dlp.exe"
-    # Check PATH
-    for p in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = os.path.join(p, exe)
-        if os.path.isfile(candidate):
-            return [candidate]
-    # Same dir as script
-    script_dir = Path(__file__).resolve().parent
-    candidate = script_dir / exe
-    if candidate.is_file():
-        return [str(candidate)]
-    # Fallback: run as module (works when installed via pip but exe not on PATH)
-    try:
-        import yt_dlp  # noqa: F401
-        return [sys.executable, "-m", "yt_dlp"]
-    except ImportError:
-        pass
-    return [exe]
-
-
-def get_js_runtime_args():
-    """Return yt-dlp args for a JS runtime. Deno is default; if missing, use node or bun."""
-    if shutil.which("deno"):
-        return []
-    if shutil.which("node"):
-        return ["--js-runtimes", "node"]
-    if shutil.which("bun"):
-        return ["--js-runtimes", "bun"]
-    return []
+    fam = detect_platform_family()
+    print("tkinter is not installed — the GUI cannot start.", file=sys.stderr)
+    print(file=sys.stderr)
+    if fam == "fedora":
+        print("  Fedora:  sudo dnf install python3-tkinter", file=sys.stderr)
+    elif fam == "debian":
+        print("  Debian/Ubuntu:  sudo apt install python3-tk", file=sys.stderr)
+    elif fam == "arch":
+        print("  Arch:  sudo pacman -S tk", file=sys.stderr)
+    else:
+        print("  Linux: install the tk package for your distro (often python3-tk or python3-tkinter).", file=sys.stderr)
+    print("  Windows/macOS: use the official Python installer from python.org (includes tkinter).", file=sys.stderr)
 
 
 class PlaylistMP3App:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("YouTube Playlist → MP3")
-        self.root.minsize(520, 420)
-        self.root.geometry("620x500")
+        self.root.minsize(560, 480)
+        self.root.geometry("680x560")
+        self.root.configure(bg=_COL["bg"])
 
         self.download_running = False
         self.process = None
-        self.yt_dlp_cmd = get_yt_dlp_cmd()
+        self._playlist_track_progress: Optional[PlaylistTrackProgress] = None
+        self._ff = _default_font_family()
 
+        self._apply_style()
         self._build_ui()
 
+    def _apply_style(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        bg, card, border = _COL["bg"], _COL["card"], _COL["border"]
+        text, muted, accent = _COL["text"], _COL["muted"], _COL["accent"]
+
+        style.configure(".", background=bg, foreground=text)
+        style.configure("TFrame", background=bg)
+        style.configure("Inner.TFrame", background=card)
+        style.configure("Card.TFrame", background=card, relief="flat")
+        style.configure("TLabel", background=bg, foreground=text, font=(self._ff, 10))
+        style.configure("Muted.TLabel", background=bg, foreground=muted, font=(self._ff, 9))
+        style.configure("Card.TLabel", background=card, foreground=text, font=(self._ff, 10))
+        style.configure("CardMuted.TLabel", background=card, foreground=muted, font=(self._ff, 9))
+        style.configure("TLabelFrame", background=card, foreground=text, relief="solid", borderwidth=1)
+        style.configure("TLabelFrame.Label", background=card, foreground=muted, font=(self._ff, 9, "bold"))
+        style.configure(
+            "TEntry",
+            fieldbackground=card,
+            foreground=text,
+            insertcolor=text,
+            padding=6,
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=card,
+            background=card,
+            foreground=text,
+            arrowcolor=text,
+            padding=4,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", card)],
+            selectbackground=[("readonly", accent)],
+            selectforeground=[("readonly", "#ffffff")],
+        )
+        style.configure(
+            "TProgressbar",
+            background=accent,
+            troughcolor=border,
+            borderwidth=0,
+            thickness=10,
+        )
+        style.configure("TButton", font=(self._ff, 10), padding=(14, 8))
+        style.configure("Accent.TButton", font=(self._ff, 10, "bold"))
+        style.map(
+            "Accent.TButton",
+            background=[("active", _COL["accent_hover"]), ("pressed", _COL["accent_hover"])],
+            foreground=[("disabled", "#94a3b8")],
+        )
+        style.configure(
+            "Accent.TButton",
+            background=accent,
+            foreground="#ffffff",
+            padding=(18, 10),
+        )
+        style.configure("Ghost.TButton", background=card, foreground=text)
+        style.map("Ghost.TButton", background=[("active", border)])
+
     def _build_ui(self):
-        main = ttk.Frame(self.root, padding=12)
+        outer = ttk.Frame(self.root, padding=0)
+        outer.pack(fill=tk.BOTH, expand=True)
+
+        header = tk.Frame(outer, bg=_COL["header"], padx=24, pady=20)
+        header.pack(fill=tk.X)
+        tk.Label(
+            header,
+            text="Playlist → MP3",
+            font=(self._ff, 20, "bold"),
+            fg="#f8fafc",
+            bg=_COL["header"],
+        ).pack(anchor=tk.W)
+        tk.Label(
+            header,
+            text="YouTube & YouTube Music · extract audio with yt-dlp",
+            font=(self._ff, 11),
+            fg=_COL["header_sub"],
+            bg=_COL["header"],
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        main = ttk.Frame(outer, padding=(20, 16))
         main.pack(fill=tk.BOTH, expand=True)
 
-        # Playlist URL
-        ttk.Label(main, text="Playlist or video URL:").pack(anchor=tk.W)
+        url_card = ttk.LabelFrame(main, text="SOURCE", padding=(14, 12))
+        url_card.pack(fill=tk.X, pady=(0, 12))
         self.url_var = tk.StringVar()
-        url_entry = ttk.Entry(main, textvariable=self.url_var, width=70)
-        url_entry.pack(fill=tk.X, pady=(2, 10))
+        url_entry = ttk.Entry(url_card, textvariable=self.url_var, width=70)
+        url_entry.pack(fill=tk.X, pady=(4, 0))
         url_entry.delete(0, tk.END)
         url_entry.insert(0, PLACEHOLDER_URL)
         url_entry.bind("<FocusIn>", lambda e: self._clear_placeholder(url_entry))
 
-        # Output folder (restore last used)
-        row = ttk.Frame(main)
-        row.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(row, text="Save to:").pack(side=tk.LEFT, padx=(0, 8))
+        out_card = ttk.LabelFrame(main, text="OUTPUT", padding=(14, 12))
+        out_card.pack(fill=tk.X, pady=(0, 12))
+        row = ttk.Frame(out_card, style="Inner.TFrame")
+        row.pack(fill=tk.X)
         self.path_var = tk.StringVar(value=load_config().get("output_dir", ""))
         path_entry = ttk.Entry(row, textvariable=self.path_var, width=50)
-        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
-        ttk.Button(row, text="Browse…", command=self._browse).pack(side=tk.LEFT)
+        path_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        ttk.Button(row, text="Browse…", style="Ghost.TButton", command=self._browse).pack(side=tk.LEFT)
 
-        # Bitrate (kbps)
-        bitrate_row = ttk.Frame(main)
-        bitrate_row.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(bitrate_row, text="Bitrate:").pack(side=tk.LEFT, padx=(0, 8))
+        opts = ttk.Frame(main)
+        opts.pack(fill=tk.X, pady=(0, 12))
+        ttk.Label(opts, text="MP3 bitrate", style="Muted.TLabel").pack(side=tk.LEFT, padx=(0, 10))
         self.bitrate_var = tk.StringVar(value="320 kbps")
         bitrate_combo = ttk.Combobox(
-            bitrate_row,
+            opts,
             textvariable=self.bitrate_var,
             values=["128 kbps", "192 kbps", "256 kbps", "320 kbps", "Best (VBR)"],
             state="readonly",
-            width=14,
+            width=16,
         )
         bitrate_combo.pack(side=tk.LEFT)
 
-        # Progress bar (updated from yt-dlp output)
         self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_label = ttk.Label(main, text="", style="Muted.TLabel")
+        self.progress_label.pack(anchor=tk.W, pady=(0, 2))
         self.progress_bar = ttk.Progressbar(
             main, variable=self.progress_var, maximum=100.0, mode="determinate"
         )
-        self.progress_bar.pack(fill=tk.X, pady=(0, 8))
+        self.progress_bar.pack(fill=tk.X, pady=(0, 12))
 
-        # Buttons
         btn_row = ttk.Frame(main)
-        btn_row.pack(fill=tk.X, pady=(4, 8))
+        btn_row.pack(fill=tk.X, pady=(0, 10))
         self.btn_download = ttk.Button(
-            btn_row, text="Download as MP3", command=self._start_download
+            btn_row, text="Download as MP3", style="Accent.TButton", command=self._start_download
         )
-        self.btn_download.pack(side=tk.LEFT, padx=(0, 8))
-        self.btn_stop = ttk.Button(btn_row, text="Stop", command=self._stop_download, state=tk.DISABLED)
+        self.btn_download.pack(side=tk.LEFT, padx=(0, 10))
+        self.btn_stop = ttk.Button(
+            btn_row, text="Stop", style="Ghost.TButton", command=self._stop_download, state=tk.DISABLED
+        )
         self.btn_stop.pack(side=tk.LEFT)
 
-        # Progress / log
-        log_row = ttk.Frame(main)
-        log_row.pack(fill=tk.X)
-        ttk.Label(log_row, text="Log:").pack(side=tk.LEFT)
-        ttk.Button(log_row, text="Clear", command=self._clear_log).pack(side=tk.RIGHT)
+        log_wrap = ttk.Frame(main)
+        log_wrap.pack(fill=tk.BOTH, expand=True)
+        log_hdr = ttk.Frame(log_wrap)
+        log_hdr.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(log_hdr, text="Activity log", style="Muted.TLabel").pack(side=tk.LEFT)
+        ttk.Button(log_hdr, text="Clear", style="Ghost.TButton", command=self._clear_log).pack(side=tk.RIGHT)
+
+        log_frame = tk.Frame(log_wrap, bg=_COL["border"], padx=1, pady=1)
+        log_frame.pack(fill=tk.BOTH, expand=True)
+        mono = tkfont.Font(family="TkFixedFont", size=10)
         self.log = scrolledtext.ScrolledText(
-            main, height=14, wrap=tk.WORD, state=tk.DISABLED, font="TkFixedFont",
+            log_frame,
+            height=12,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            font=mono,
+            bg=_COL["log_bg"],
+            fg=_COL["log_fg"],
+            insertbackground=_COL["log_fg"],
+            selectbackground=_COL["log_sel"],
+            selectforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+            padx=12,
+            pady=10,
         )
-        self.log.pack(fill=tk.BOTH, expand=True, pady=(2, 0))
+        self.log.pack(fill=tk.BOTH, expand=True)
 
         self._log("Paste a YouTube or YouTube Music playlist/video URL, choose a folder, then click Download as MP3.")
         self._log("Requires: yt-dlp and ffmpeg on PATH (or in this folder).")
         self._log("")
+
+        self._build_menubar()
+        self.root.after(150, self._show_startup_dependency_help)
+
+    def _build_menubar(self) -> None:
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="Setup & dependencies…", command=self._open_setup_help)
+
+    def _open_setup_help(self) -> None:
+        issues = collect_dependency_issues()
+        if not issues:
+            messagebox.showinfo(
+                "Setup & dependencies",
+                "Everything this app looks for is installed.\n\n"
+                "• yt-dlp (Python package)\n"
+                "• ffmpeg\n"
+                "• A JS runtime (Deno / Node / Bun) for YouTube\n\n"
+                "If downloads still fail, check the log and see README.md.",
+            )
+        else:
+            self._show_dependency_dialog(issues)
+
+    def _show_dependency_dialog(self, issues: list[DepIssue]) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("Setup — install missing tools")
+        win.geometry("660x440")
+        win.minsize(500, 320)
+        win.transient(self.root)
+        outer = ttk.Frame(win, padding=12)
+        outer.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            outer,
+            text="Install the items below, then try again. Use Copy to paste commands into a terminal.",
+            wraplength=620,
+        ).pack(anchor=tk.W, pady=(0, 8))
+        body = ttk.Frame(outer)
+        body.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        text = format_issues_report(issues)
+        st = scrolledtext.ScrolledText(
+            body,
+            height=16,
+            wrap=tk.WORD,
+            font=("TkFixedFont", 10),
+            state=tk.NORMAL,
+        )
+        st.pack(fill=tk.BOTH, expand=True)
+        st.insert("1.0", text)
+        st.configure(state=tk.DISABLED)
+
+        def copy_all() -> None:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+
+        btn_row = ttk.Frame(outer)
+        btn_row.pack(fill=tk.X)
+        ttk.Button(btn_row, text="Copy to clipboard", command=copy_all).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_row, text="Close", style="Ghost.TButton", command=win.destroy).pack(side=tk.RIGHT)
+
+    def _show_startup_dependency_help(self) -> None:
+        issues = collect_dependency_issues()
+        if issues:
+            self._show_dependency_dialog(issues)
 
     def _clear_placeholder(self, entry: ttk.Entry):
         if entry.get().strip() == PLACEHOLDER_URL:
@@ -197,8 +353,19 @@ class PlaylistMP3App:
 
     def _progress_reset(self):
         """Reset progress bar to indeterminate (unknown progress) at start."""
+        self.progress_label.configure(text="")
         self.progress_bar.configure(mode="indeterminate")
         self.progress_bar.start(8)
+
+    def _progress_set_tracks(self, completed: int, total: Optional[int]):
+        """Update 'X of Y songs' label."""
+        if total is not None and total > 0:
+            label = f"{completed} of {total} track{'s' if total != 1 else ''} downloaded"
+        elif completed > 0:
+            label = f"{completed} track{'s' if completed != 1 else ''} downloaded"
+        else:
+            label = ""
+        self.progress_label.configure(text=label)
 
     def _progress_set_percent(self, value: float):
         """Set progress bar to a 0–100 percentage (determinate)."""
@@ -218,15 +385,6 @@ class PlaylistMP3App:
         self.progress_bar.configure(mode="determinate")
         self.progress_var.set(100.0)
 
-    def _parse_progress_line(self, line: str) -> Optional[float]:
-        """Extract download percentage from a yt-dlp progress line. Returns 0–100 or None."""
-        # e.g. [download] 45.2% of 5.00MiB at 1.20MiB/s ETA 00:03
-        # e.g. [download] 100% of 1.20MiB in 00:00
-        m = re.search(r"\[download\]\s*(\d+(?:\.\d+)?)\s*%", line)
-        if m:
-            return float(m.group(1))
-        return None
-
     def _start_download(self):
         url = (self.url_var.get() or "").strip()
         out = (self.path_var.get() or "").strip()
@@ -240,8 +398,13 @@ class PlaylistMP3App:
         if not out:
             messagebox.showwarning("Missing folder", "Please choose a folder to save the MP3 files.")
             return
-        if not os.path.isdir(out):
-            messagebox.showerror("Invalid folder", f"Folder does not exist:\n{out}")
+        try:
+            out = ensure_output_dir(out)
+        except NotADirectoryError as e:
+            messagebox.showerror("Invalid path", str(e))
+            return
+        except OSError as e:
+            messagebox.showerror("Could not create folder", str(e))
             return
 
         save_config(load_config() | {"output_dir": out})
@@ -259,28 +422,9 @@ class PlaylistMP3App:
         thread.start()
 
     def _run_download(self, url: str, output_dir: str, bitrate: str):
-        # Map display label to yt-dlp --audio-quality value (K = CBR kbps, 0 = best VBR)
-        quality_map = {
-            "128 kbps": "128K",
-            "192 kbps": "192K",
-            "256 kbps": "256K",
-            "320 kbps": "320K",
-            "Best (VBR)": "0",
-        }
-        quality = quality_map.get(bitrate, "320K")
-        # Filename: "01 - Artist - Title.mp3" with playlist order; %(playlist_index)s is 1,2,... for playlist/single
-        out_tmpl = os.path.join(output_dir, "%(playlist_index)02d - %(artist,Unknown)s - %(title)s.%(ext)s")
-        cmd = list(self.yt_dlp_cmd) + get_js_runtime_args() + [
-            "-x",
-            "--audio-format", "mp3",
-            "--audio-quality", quality,
-            "-o", out_tmpl,
-            "--embed-metadata",
-            "--newline",
-            "--progress",
-            "--no-mtime",
-            url,
-        ]
+        cmd = build_yt_dlp_command(url, output_dir, bitrate)
+        self._playlist_track_progress = PlaylistTrackProgress()
+        pt = self._playlist_track_progress
         returncode = 0
         try:
             self.process = subprocess.Popen(
@@ -297,10 +441,18 @@ class PlaylistMP3App:
                 line = line.rstrip()
                 if line:
                     self.root.after(0, lambda l=line: self._log(l))
-                    percent = self._parse_progress_line(line)
+                    pt.apply_line(line)
+                    self.root.after(
+                        0,
+                        lambda: self._progress_set_tracks(pt.completed, pt.total),
+                    )
+                    percent = parse_progress_line(line)
                     if percent is not None:
                         self.root.after(0, lambda p=percent: self._progress_set_percent(p))
             returncode = self.process.wait()
+            if returncode == 0:
+                pt.finalize_success()
+                self.root.after(0, lambda: self._progress_set_tracks(pt.completed, pt.total))
         except FileNotFoundError:
             returncode = -1
             self.root.after(0, lambda: self._log(
@@ -334,7 +486,10 @@ class PlaylistMP3App:
         self.root.mainloop()
 
 
-def main():
+def main() -> None:
+    if tk is None:
+        _print_tkinter_install_help()
+        raise SystemExit(1)
     app = PlaylistMP3App()
     app.run()
 

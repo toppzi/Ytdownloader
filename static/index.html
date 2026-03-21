@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Playlist → MP3</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="wrap">
+        <h1>Playlist → MP3</h1>
+        <p>YouTube &amp; YouTube Music · runs on your computer via yt-dlp</p>
+        <span class="badge">Local only · not uploaded to the cloud</span>
+      </div>
+    </header>
+
+    <div class="wrap">
+      <section class="card">
+        <h2>Source</h2>
+        <label for="url">Playlist or video URL</label>
+        <input
+          id="url"
+          type="url"
+          name="url"
+          placeholder="https://www.youtube.com/playlist?list=…"
+          autocomplete="off"
+        />
+        <p class="hint">Paste a playlist or single video link (including YouTube Music).</p>
+      </section>
+
+      <section class="card">
+        <h2>Output</h2>
+        <label for="output-dir">Folder on this computer</label>
+        <input
+          id="output-dir"
+          type="text"
+          name="output_dir"
+          placeholder="/home/you/Music/youtube"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <p class="hint">
+          Absolute path where MP3 files will be written. Missing folders are created automatically (including parents).
+          Your browser cannot pick a folder, so type or paste the path here.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Quality</h2>
+        <label for="bitrate">MP3 bitrate</label>
+        <select id="bitrate" name="bitrate">
+          <option value="128 kbps">128 kbps</option>
+          <option value="192 kbps">192 kbps</option>
+          <option value="256 kbps">256 kbps</option>
+          <option value="320 kbps" selected>320 kbps</option>
+          <option value="Best (VBR)">Best (VBR)</option>
+        </select>
+      </section>
+
+      <section class="card">
+        <div class="row">
+          <button type="button" class="btn btn-primary" id="btn-download">Download as MP3</button>
+          <button type="button" class="btn btn-danger" id="btn-stop" disabled>Stop</button>
+        </div>
+        <p class="tracks-status" id="tracks-status" aria-live="polite"></p>
+        <div class="progress-wrap">
+          <progress id="progress" max="100" value="0"></progress>
+        </div>
+        <p class="status" id="status"></p>
+      </section>
+
+      <section class="card">
+        <div class="log-header">
+          <h2>Activity log</h2>
+          <button type="button" class="btn btn-ghost" id="btn-clear-log">Clear</button>
+        </div>
+        <pre id="log" aria-label="yt-dlp output"></pre>
+      </section>
+
+      <footer class="note">
+        This page talks only to <strong>localhost</strong>. Keep the terminal window open while downloading. Requires
+        yt-dlp, ffmpeg, and a JS runtime — same as the desktop GUI.
+      </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
